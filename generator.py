@@ -15,14 +15,16 @@ except ImportError:
     import configparser as ConfigParser
 import logging
 
+basepath = os.path.abspath(os.getcwd())
+
 
 class Generator(object):
     """ Generator of Chinese Poem
     """
     def __init__(self, conf):
-        self._ci_words_file = conf.get('ci', 'ci_words_file')
-        self._ci_rhym_file = conf.get('ci', 'ci_rhym_file')
-        self._ci_result_file = conf.get('ci', 'ci_result_file')
+        self._ci_words_file = os.path.join(basepath, conf.get('ci', 'ci_words_file'))
+        self._ci_rhythm_file = os.path.join(basepath, conf.get('ci', 'ci_rhythm_file'))
+        self._ci_result_file = os.path.join(basepath, conf.get('ci', 'ci_result_file'))
         self._support_titles = conf.get('ci', 'support_titles')
         
         self._important_words = []
@@ -47,14 +49,19 @@ class Generator(object):
     def title(self, value):
         self._title = value
         
+    def _build_pingze_rhythm_words_dict(self, logger):
+	pass
+
+    def _count_general_rhythm_words(self, logger):
+	pass
+
     def init(self, logger):
-        # load all rhym supported
-        self._load_rhym_format(logger)
         
-        # mapping rhym to words, ping&ze : words
-        self._build_rhym_words_dict(logger)
+        # mapping rhythm to words, ping&ze : words
+        self._build_pingze_rhythm_words_dict(logger)
         
-        # mapping rhym_end to words, 
+        # mapping rhythm_end to words, 
+	self._count_general_rhythm_words(logger)
     
     def check(self, input_param_dict, logger):
         if ('title' in input_param_dict) and (input_param_dict['title'] not in self._support_titles):
@@ -79,7 +86,6 @@ class Generator(object):
     
             
 if __name__ == '__main__':
-    basepath = os.path.abspath(os.getcwd())
     confpath = os.path.join(basepath, 'conf/poem.conf')
     conf = ConfigParser.RawConfigParser()
     conf.read(confpath)
