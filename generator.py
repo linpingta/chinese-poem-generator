@@ -1,5 +1,5 @@
-#-*- coding:utf-8 -*-
-#vim: set bg=dark noet ts=4 sw=4 fdm=indent :
+#-*- coding: utf-8 -*-
+# vim: set bg=dark noet ts=4 sw=4 fdm=indent :
     
 """ Generator of Chinese Poem (宋词)"""
 __author__ = 'linpingta'
@@ -102,10 +102,10 @@ if __name__ == '__main__':
         
         # As user input, for theme of poem, and title
         user_input_dict = dict(title=u"浣溪沙", important_words=[])
+	print user_input_dict["title"]
 
         # Generate poem
         error_info = generator.check(user_input_dict, logger)
-        print error_info
         if not error_info:
             generator.important_words = user_input_dict["important_words"]
             generator.title = user_input_dict["title"]
