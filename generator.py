@@ -174,6 +174,21 @@ class Generator(object):
 		#sorted_word_count = sorted(self._word_count_dict.items(), key=operator.itemgetter(1))
 		#print sorted_word_count[-1][0]
 
+	def _split_words(self, logger):
+		with open(self._ci_words_file, 'r') as fp_r:
+			count = 1
+			while 1:
+				line = fp_r.readline()
+				line = line.strip().decode("utf-8")
+				if not line:
+					continue
+				if line == "END":
+					break
+
+				print line
+				count += 1
+				if count > 10:
+					break
 	def _init_data_build(self, logger):
 		""" generate title, pingze, rhythm, word relationship"""
 		# mapping title to ping&ze
@@ -184,6 +199,9 @@ class Generator(object):
 		
 		# mapping rhythm_end to words, 
 		self._count_general_rhythm_words(logger)
+
+		# split words
+		self._split_words(logger)
 
 		# save related data
 		for data_file in self._data_files:
@@ -244,7 +262,7 @@ if __name__ == '__main__':
 	generator = Generator(conf)
 	try:
 		# As user input, for theme of poem, and title
-		user_input_dict = dict(title=u"浣溪沙", important_words=[], force_data_build=False)
+		user_input_dict = dict(title=u"浣溪沙", important_words=[], force_data_buildTrue)=
 		print user_input_dict["title"]
 
 		# Init
