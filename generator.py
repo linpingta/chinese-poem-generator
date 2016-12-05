@@ -262,7 +262,7 @@ if __name__ == '__main__':
 	generator = Generator(conf)
 	try:
 		# As user input, for theme of poem, and title
-		user_input_dict = dict(title=u"浣溪沙", important_words=[], force_data_buildTrue)=
+		user_input_dict = dict(title=u"浣溪沙", important_words=[], force_data_build=True)
 		print user_input_dict["title"]
 
 		# Init
