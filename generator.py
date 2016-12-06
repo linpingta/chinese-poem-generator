@@ -16,6 +16,8 @@ except ImportError:
 import logging
 import re
 import simplejson as json
+import jieba
+from gensim import models
 
 from title_rhythm import TitleRhythmDict
 
@@ -42,13 +44,19 @@ class Generator(object):
 		self._pingze_rhythm_dict = {}
 		self._rhythm_word_dict = {}
 		self._reverse_rhythm_word_dict = {}
+		self._reverse_pingze_word_dict = {}
 
+		# split related data
+		self._split_sentences = []
+		self._word_model = None
+
+		# word count related
 		self._word_count_dict = {}
 		self._rhythm_count_dict = {}
 		
 		# storage of related precalculated data
 		self._data_files = [
-			"title_pingze_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "word_count_dict", "rhythm_count_dict"
+			"title_pingze_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences"
 		]
 
 		# store generated poem
@@ -126,9 +134,11 @@ class Generator(object):
 					if u"平" in line: # ping related
 						self._pingze_words_dict.setdefault('1', []).extend(words)
 						self._pingze_rhythm_dict.setdefault('1', []).append(rhythm_word)
+						self._reverse_pingze_word_dict[word] = '1'
 					else: # ze related
 						self._pingze_words_dict.setdefault('2', []).extend(words)
 						self._pingze_rhythm_dict.setdefault('2', []).append(rhythm_word)
+						self._reverse_pingze_word_dict[word] = '2'
 				count += 1
 				#if count > 2:
 				#	break
@@ -152,7 +162,7 @@ class Generator(object):
 						final_word = sentence[-1]
 						#print 'final', final_word
 						if final_word not in self._reverse_rhythm_word_dict:
-							print 'not exist', final_word
+							#print 'not exist', final_word
 							continue
 						rhythm_word = self._reverse_rhythm_word_dict[final_word]
 						#print 'rhythm', rhythm_word
@@ -175,6 +185,7 @@ class Generator(object):
 		#print sorted_word_count[-1][0]
 
 	def _split_words(self, logger):
+		""" split words with jieba"""
 		with open(self._ci_words_file, 'r') as fp_r:
 			count = 1
 			while 1:
@@ -184,11 +195,27 @@ class Generator(object):
 					continue
 				if line == "END":
 					break
+				if (u"，" not in line) and (u"。" not in line): # only use content part for stats
+					continue
 
 				print line
+				words = jieba.cut(line)
+				words = list(words)
+				#print '/ '.join(words)
+				self._split_sentences.append(words)
 				count += 1
-				if count > 10:
-					break
+				#if count > 10:
+				#	break
+
+	def _build_word2vec(self, logger):
+		""" build word2vec for words"""
+		if not self._split_words:
+			logger.error("no split words, skip")
+		else:
+			self._word_model = models.Word2Vec(self._split_sentences, min_count=5)
+			self._word_model.save(os.path.join("data", "word_model"))
+			
+
 	def _init_data_build(self, logger):
 		""" generate title, pingze, rhythm, word relationship"""
 		# mapping title to ping&ze
@@ -203,6 +230,9 @@ class Generator(object):
 		# split words
 		self._split_words(logger)
 
+		# build word2vec
+		self._build_word2vec(logger)
+
 		# save related data
 		for data_file in self._data_files:
 			value = getattr(self, "_"+data_file)
@@ -214,6 +244,47 @@ class Generator(object):
 			with open(os.path.join("data", data_file), "r") as fp_r:
 				value = json.load(fp_r)
 				setattr(self, "_"+data_file, value)
+		self._word_model = models.Word2Vec.load(os.path.join("data", "word_model"))
+
+	def _get_format_with_title(self, title, logger):
+		if title not in self._title_pingze_dict:
+			return -1
+		return self._title_pingze_dict[title]
+
+	def _combine_important_word_with_sentence(self, important_words, format_sentences, logger):
+		""" 
+		make every sentence has one related importance word
+		promise pingze order and position order
+
+		we try to use whole word to find similar words first,
+		if not, then use each word to find
+		"""
+		sentence_length = len(format_sentences)
+
+		whole_similar_words = []
+		try:
+			# treat important words as whole first
+			whole_similar_words = self._word_model.most_similar(positive=important_words, topn=2*sentence_length)
+		except KeyError as e:
+			# treat important word seperately
+			whole_similar_words = []
+			for important_word in important_words:
+				try:
+					similar_words = self._word_model.most_similar(positive=[ important_word ], topn=2*sentence_length)
+				except KeyError as e1:
+					pass
+				else:
+					for (similar_word, similarity) in similar_words:
+						print similar_word, similarity
+
+		# Oops, we don't know what user want, create one randomly
+		if not whole_similar_words:
+			pass
+
+		# at now, we promise whole_similar_words have enough data
+		# now, combine them with sentences
+			
+		#return [ similar_word for idx, (similar_word, similarity) in enumerate(similar_words) if idx < sentence_length]
 
 	def init(self, logger):
 		
@@ -232,6 +303,16 @@ class Generator(object):
 
 	def generate(self, logger):
 		""" main function for poem generated"""
+
+		# get title related sentences
+		format_sentences = self._get_format_with_title(self._title, logger)
+		if format_sentences < 0:
+			raise ValueError("title[%s] not defined in dict" % self._title)
+
+		# combine important words with format sentence
+		sentence_word_list = self._combine_important_word_with_sentence(self._important_words, format_sentences, logger)
+
+		# decide rhythm and related words
 		pass
 	
 	def save(self, logger):
@@ -262,7 +343,9 @@ if __name__ == '__main__':
 	generator = Generator(conf)
 	try:
 		# As user input, for theme of poem, and title
-		user_input_dict = dict(title=u"浣溪沙", important_words=[], force_data_build=True)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
+		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
 		print user_input_dict["title"]
 
 		# Init
@@ -280,6 +363,9 @@ if __name__ == '__main__':
 		else:
 			generator.error_info = error_info
 		   
+	except ValueError as e:
+		logger.exception(e)
+		print e
 	except Exception as e:
 		logger.exception(e)
 		print e
