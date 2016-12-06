@@ -18,6 +18,7 @@ import re
 import simplejson as json
 import jieba
 from gensim import models
+import random
 
 from title_rhythm import TitleRhythmDict
 
@@ -251,6 +252,81 @@ class Generator(object):
 			return -1
 		return self._title_pingze_dict[title]
 
+	def _check_position_by_sentence_length(self, sentence_length, logger):
+		if sentence_length == 7:
+			return [0,2,4,5]
+		elif sentence_length == 6:
+			return [0,2,4]
+		elif sentence_length == 5:
+			return [0,2,4]
+		elif sentence_length == 4:
+			return [0,2]
+		elif sentence_length == 3:
+			return [0]
+		else:
+			return []
+
+	def _weighted_choice(self, choices):
+		total = sum(w for (c, w) in choices)
+		r = random.uniform(0, total)
+		upto = 0
+		for c, w in choices:
+			if upto + w >= r:
+				return c
+			upto += w
+
+	def _compare_words(self, format_words, input_words):
+		for (format_word, input_word) in zip(format_words, input_words):
+			if format_word == '0': # no check needed
+				continue
+			if format_word != input_word:
+				return False
+		return True
+
+	def _combine_candidate_word_with_single_sentence(self, format_sentence, candidate_words, already_used_words, logger):
+		"""
+		In each sentence, put one candidate word in it
+		with consideration of pingze as well as postion and already used condition
+		"""
+		position_word_dict = {}
+
+		# remove already used words
+		new_candidate_words = candidate_words - already_used_words
+		if not new_candidate_words:
+			logger.warning("use all words, that shouldnt happen")
+			new_candidate_words = candidate_words
+
+		sentence_length = len(format_sentence)
+		positions = self._check_position_by_sentence_length(sentence_length, logger)
+		if not positions: # don't consider position, alread consider pingze
+			logger.info("sentence_length[%d] dont check position, as no defined" % sentence_length)
+
+		# random fill first
+		for i in range(5):
+			candidate_word = self._weighted_choice(new_candidate_words)
+
+			# get word pingze
+			word_pingze = []
+			for candidate_word_elem in candidate_word:
+				if candidate_word_elem not in self._reverse_pingze_word_dict:
+					break
+				word_pingze.append(self._reverse_pingze_word_dict[candidate_word_elem]
+			if len(word_pingze) != len(candidate_word):
+				continue
+
+			for j in range(len(position) - 1): # dont put in rhythm part
+				pos_start = position[j]
+				pos_end = position[j+1]
+				tmp_word = format_sentence[pos_start:pos_end] 
+				if (len(tmp_word) == len(word_pingze)) and (self._compare_words(tmp_word, word_pingze)):
+					# write word here
+					for p,m in enumerate(range(pos_start, pos_end)):
+						position_word_dict[m] = candidate_word[p]
+
+		# force fill by order
+
+		return position_word_dict
+
 	def _combine_important_word_with_sentence(self, important_words, format_sentences, logger):
 		""" 
 		make every sentence has one related importance word
@@ -260,29 +336,44 @@ class Generator(object):
 		if not, then use each word to find
 		"""
 		sentence_length = len(format_sentences)
+		candidate_length = 3 * sentence_length
 
 		whole_similar_words = []
 		try:
 			# treat important words as whole first
-			whole_similar_words = self._word_model.most_similar(positive=important_words, topn=2*sentence_length)
+			whole_similar_words = self._word_model.most_similar(positive=important_words, topn=candidate_length)
+			logger.info("get whole_similar_words[%s] based on important_words[%s] as whole" % (str(whole_similar_words), str(important_words)))
 		except KeyError as e:
 			# treat important word seperately
 			whole_similar_words = []
 			for important_word in important_words:
 				try:
-					similar_words = self._word_model.most_similar(positive=[ important_word ], topn=2*sentence_length)
+					similar_words = self._word_model.most_similar(positive=[ important_word ], topn=candidate_length)
 				except KeyError as e1:
 					pass
 				else:
 					for (similar_word, similarity) in similar_words:
 						print similar_word, similarity
+					whole_similar_words.extend(similar_words)
+					logger.info("get similar_words[%s] based on important_word[%s] seperately" % (str(similar_words), str(important_word)))
 
 		# Oops, we don't know what user want, create one randomly
 		if not whole_similar_words:
-			pass
+			logger.warning("Oops, no similar word generated based on important_word[%s] seperately" % str(important_word))
+
+		# order list of tuple, and fetch the first candidate_length of candidates
+		from operator import itemgetter
+		whole_similar_words = sorted(whole_similar_words, key=itemgetter(1))
+		candidate_words = whole_similar_words[:candidate_length]
+		logger.info("generate candidate_words[%s] based on important_words[%s]" % (str(candidate_words), str(important_words)))
+		#print 'whole', len(whole_similar_words), whole_similar_words
+		#print 'candidate', len(candidate_words), candidate_words
 
 		# at now, we promise whole_similar_words have enough data
 		# now, combine them with sentences
+		already_used_words = []
+		for format_sentence in format_sentences:
+			self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
 			
 		#return [ similar_word for idx, (similar_word, similarity) in enumerate(similar_words) if idx < sentence_length]
 
