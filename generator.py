@@ -55,10 +55,14 @@ class Generator(object):
 		# word count related
 		self._word_count_dict = {}
 		self._rhythm_count_dict = {}
+
+		self._bigram_word_to_start_dict = {}
+		self._bigram_word_to_end_dict = {}
+		self._bigram_count_dict = {}
 		
 		# storage of related precalculated data
 		self._data_files = [
-			"title_pingze_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences"
+			"title_pingze_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences", "bigram_word_to_start_dict", "bigram_word_to_end_dict", "bigram_count_dict"
 		]
 
 		# store generated poem
@@ -107,7 +111,7 @@ class Generator(object):
 					else:
 						new_sentence += "1"
 				new_sentences.append(new_sentence)
-			self._title_pingze_dict[title] = new_sentences
+			self._title_pingze_dict[title.decode()] = new_sentences
 
 	def _build_pingze_rhythm_words_dict(self, logger):
 		with open(self._ci_rhythm_file, 'r') as fp_r:
@@ -129,18 +133,25 @@ class Generator(object):
 					rhythm_word = line[-2]
 					self._rhythm_word_dict[rhythm_word] = words
 
+					is_ping = True
+					if u"平" in line: # ping related
+						self._pingze_words_dict.setdefault('1', []).extend(words)
+						self._pingze_rhythm_dict.setdefault('1', []).append(rhythm_word)
+						is_ping = True
+					else: # ze related
+						self._pingze_words_dict.setdefault('2', []).extend(words)
+						self._pingze_rhythm_dict.setdefault('2', []).append(rhythm_word)
+						is_ping = False
+
 					# build reverse dict for count later
 					for word in words:
 						self._reverse_rhythm_word_dict[word] = rhythm_word
 
-					if u"平" in line: # ping related
-						self._pingze_words_dict.setdefault('1', []).extend(words)
-						self._pingze_rhythm_dict.setdefault('1', []).append(rhythm_word)
-						self._reverse_pingze_word_dict[word] = '1'
-					else: # ze related
-						self._pingze_words_dict.setdefault('2', []).extend(words)
-						self._pingze_rhythm_dict.setdefault('2', []).append(rhythm_word)
-						self._reverse_pingze_word_dict[word] = '2'
+						if is_ping: # ping related
+							self._reverse_pingze_word_dict[word] = '1'
+						else: # ze related
+							self._reverse_pingze_word_dict[word] = '2'
+
 				#count += 1
 				#if count > 2:
 				#	break
@@ -177,15 +188,29 @@ class Generator(object):
 						else:
 							self._rhythm_count_dict[rhythm_word] += 1
 
+						# build 2-gram
+						for idx, word in enumerate(sentence):
+							if idx >= len(sentence) - 1:
+								break
+							first_word = word
+							second_word = sentence[idx+1]
+							bigram_key = '__'.join([first_word, second_word])
+							if bigram_key not in self._bigram_count_dict:
+								self._bigram_count_dict[bigram_key] = 1
+							else:
+								self._bigram_count_dict[bigram_key] += 1
+							self._bigram_word_to_start_dict.setdefault(first_word, []).append(bigram_key)
+							self._bigram_word_to_end_dict.setdefault(second_word, []).append(bigram_key)
+
 				#print line
+				#print 'bigram'
+				#print self._bigram_count_dict
+				#print self._bigram_word_to_start_dict
+				#print self._bigram_word_to_end_dict
 
 				#count += 1
 				#if count > 10:
 				#	break
-
-		self._word_count_dict = sorted(self._word_count_dict.items(), key=operator.itemgetter(1), reverse=True)
-		self._rhythm_count_dict = sorted(self._rhythm_count_dict.items(), key=operator.itemgetter(1), reverse=True)
-		#print sorted_word_count[-1][0]
 
 	def _split_words(self, logger):
 		""" split words with jieba"""
@@ -201,7 +226,7 @@ class Generator(object):
 				if (u"，" not in line) and (u"。" not in line): # only use content part for stats
 					continue
 
-				print line
+				#print line
 				words = jieba.cut(line)
 				words = list(words)
 				#print '/ '.join(words)
@@ -241,6 +266,18 @@ class Generator(object):
 			value = getattr(self, "_"+data_file)
 			with open(os.path.join("data", data_file), "w") as fp_w:
 				json.dump(value, fp_w)
+
+		print 'len', len(self._reverse_pingze_word_dict.keys())
+		count_ping = 0
+		count_ze = 0
+		for key, item in self._reverse_pingze_word_dict.iteritems():
+			if item == '1':
+				count_ping = count_ping + 1
+			if item == '2':
+				count_ze = count_ze + 1
+		print count_ping
+		print count_ze
+		
 
 	def _load_data_build(self, logger):
 		for data_file in self._data_files:
@@ -310,6 +347,7 @@ class Generator(object):
 
 		# random fill first
 		random_already_check_words = []
+		is_word_found = False
 		for i in range(5):
 			candidate_word = self._weighted_choice(new_candidate_words, random_already_check_words)
 			if not candidate_word:
@@ -325,22 +363,30 @@ class Generator(object):
 					break
 				word_pingze.append(self._reverse_pingze_word_dict[candidate_word_elem])
 			print 'word_pingze', word_pingze
-			print len(word_pingze), len(candidate_word)
-			continue
 
 			if len(word_pingze) != len(candidate_word):
 				continue
 
-			for j in range(len(position) - 1): # dont put in rhythm part
-				pos_start = position[j]
-				pos_end = position[j+1]
+			for j in range(len(positions) - 1): # dont put in rhythm part
+				pos_start = positions[j]
+				pos_end = positions[j+1]
 				tmp_word = format_sentence[pos_start:pos_end] 
 				if (len(tmp_word) == len(word_pingze)) and (self._compare_words(tmp_word, word_pingze)):
 					# write word here
 					for p, m in enumerate(range(pos_start, pos_end)):
 						position_word_dict[m] = candidate_word[p]
+					is_word_found = True
+					break
+
+			if is_word_found:
+				break
 
 		# force fill by order
+		pass
+
+		print 'positoin_word_dict', position_word_dict
+		for key, item in position_word_dict.iteritems():
+			print key, item
 
 		return position_word_dict
 
@@ -382,7 +428,7 @@ class Generator(object):
 
 		# order list of tuple, and fetch the first candidate_length of candidates
 		from operator import itemgetter
-		whole_similar_words = sorted(whole_similar_words, key=itemgetter(1))
+		whole_similar_words = sorted(whole_similar_words, key=itemgetter(1), reverse=True)
 		candidate_words = whole_similar_words[:candidate_length]
 		logger.info("generate candidate_words[%s] based on important_words[%s]" % (str(candidate_words), str(important_words)))
 		#print 'whole', len(whole_similar_words), whole_similar_words
@@ -392,29 +438,32 @@ class Generator(object):
 		# now, combine them with sentences
 		already_used_words = []
 		for format_sentence in format_sentences:
-			#keyword_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
-			# tmp, suppose no keyword filled
-			keyword_sentence = {}
+			keyword_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
 			keyword_sentences.append(keyword_sentence)
-			break
-			
-		#return [ similar_word for idx, (similar_word, similarity) in enumerate(similar_words) if idx < sentence_length]
-		return (format_sentences, keyword_sentences)
+
+		return keyword_sentences
 
 	def _generate_common_rhythm(self, is_ping=True):
 		""" generate common rhythm"""
-		candidate_rhythms = self._pingze_rhythm_dict["1"] if is_ping else self._pingze_rhythm_dict["2"]
-		print 'rhythm_count', self._rhythm_count_dict
 
+		candidate_rhythms = self._pingze_rhythm_dict["1"] if is_ping else self._pingze_rhythm_dict["2"]
+		#print 'rhythm_count', self._rhythm_count_dict
+
+		candidate_rhythm_count_dict = {}
+		for candidate_rhythm in candidate_rhythms:
+			if candidate_rhythm in self._rhythm_count_dict:
+				candidate_rhythm_count_dict[candidate_rhythm] = self._rhythm_count_dict[candidate_rhythm]
+
+		candidate_rhythm_count_dict = sorted(candidate_rhythm_count_dict.items(), key=operator.itemgetter(1), reverse=True)
+				
 		count = 0
 		narrow_candidate_rhythms = []
-		for (rhythm, rhythm_count) in self._rhythm_word_dict:
-			if rhythm in candidate_rhythms:
-				narrow_candidate_rhythms.append((rhythm, rhythm_count))
-				print 'tmp', rhythm, rhythm_count
-				count = count + 1
+		for (rhythm, rhythm_count) in candidate_rhythm_count_dict:
+			narrow_candidate_rhythms.append((rhythm, rhythm_count))
+			count = count + 1
 			if count > 5:
 				break
+
 		print 'narrow' , narrow_candidate_rhythms
 		selected_rhythm = self._weighted_choice(narrow_candidate_rhythms)
 		print 'select', selected_rhythm
@@ -422,28 +471,108 @@ class Generator(object):
 
 	def _generate_common_words(self, rhythm, is_ping=True):
 		""" generate common words"""
+
 		candidate_words = self._rhythm_word_dict[rhythm]
-		pass
+
+		candidate_word_count_dict = {}
+		for candidate_word in candidate_words:
+			if candidate_word in self._word_count_dict:
+				candidate_word_count_dict[candidate_word] = self._word_count_dict[candidate_word]
+
+		candidate_word_count_dict = sorted(candidate_word_count_dict.items(), key=operator.itemgetter(1), reverse=True)
+		return candidate_word_count_dict
 
 	def _generate_common_rhythm_words(self, is_ping=True):
 		""" generate rhythm words
 		first, generate common rhythm
 		second, generate words based on rhythm
 		"""
+
 		rhythm = self._generate_common_rhythm(is_ping)
-		#return self._generate_common_words(rhythm, is_ping)
+		logger.info("use rhythm[%s] for generatoin" % rhythm)
+		return self._generate_common_words(rhythm, is_ping)
 
 	def _generate_rhythm(self, format_sentences, word_sentences, logger):
 		""" generate rhythm"""
 
-		# generate ping rhythm
-		ping_words = self._generate_common_rhythm_words(True)
+		# generate ping word with count
+		ping_word_count_dict = self._generate_common_rhythm_words(True)
+		print 'ping', ping_word_count_dict
 
-		# genrate ze rhythm
-		ze_words = self._generate_common_rhythm_words(False)
+		# genrate ze word with count
+		ze_word_count_dict = self._generate_common_rhythm_words(False)
+		print 'ze', ze_word_count_dict
 
-		#for format_sentence in format_sentences:
-		#	print format_sentence
+		already_used_rhythm_words = []
+		for format_sentence, word_sentence in zip(format_sentences, word_sentences):
+			rhythm_word = ""
+			if format_sentence[-1] == '1':
+				rhythm_word = self._weighted_choice(ping_word_count_dict, already_used_rhythm_words)
+			elif format_sentence[-1] == '2':
+				rhythm_word = self._weighted_choice(ze_word_count_dict, already_used_rhythm_words)
+			elif format_sentence[-1] == '0':
+				rhythm_word = self._weighted_choice(ping_word_count_dict + ze_word_count_dict, already_used_rhythm_words)
+			else:
+				logger.error("rhythm_type[%s] illegal" % format_sentence[-1])
+			already_used_rhythm_words.append(rhythm_word)
+
+			word_sentence[len(format_sentence)-1] = rhythm_word
+				
+	def _fill_word(self, direction, tofill_position, format_sentence, word_sentence, global_repeat_words, logger):
+		""" fill word by related word, and position"""
+
+		seed_word = word_sentence[tofill_position - direction]
+
+		# check 2-gram dict
+
+		# check pingze order
+
+		# select and fill
+		selected_word = u""
+		word_sentence[tofill_position] = selected_word
+
+	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, logger):
+		""" recursion generate"""
+
+		sentence_length = len(format_sentence)
+
+		# all position filled, return
+		if len(word_sentence.keys()) == sentence_length:
+			return
+
+		# show candidate positions based on current filled positions
+		candidate_positions = []
+		[ candidate_positions.append(i) for i in range(sentence_length) if ((i-1) in word_sentence) or ((i+1) in word_sentence) ]
+		if not candidate_positions:
+			raise ValueError("candidation_position len zero")
+		if len(candidate_positions) == 1:
+			tofill_position = candidate_positions[0]
+		else: # random choose one
+			idx = random.randint(0, len(candidate_positions))
+			tofill_position = candidate_positions[idx]
+
+		up_fill_direction = (tofill_position - 1) in word_sentence
+		down_fill_direction = (tofill_position + 1) in word_sentence
+		both_fill_direction = up_fill_direction and down_fill_direction
+
+		if both_fill_direction: # consider format, choose only one, consider later
+			up_fill_direction = False
+
+		both_fill_direction = up_fill_direction and down_fill_direction
+		assert (not both_fill_direction)
+
+		# fill word one by one
+		if up_fill_direction:
+			self._fill_word(1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
+		else:
+			self._fill_word(-1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
+
+	def _generate(self, format_sentences, word_sentences, logger):
+		""" generate poem based on important words and rhythm word"""
+
+		# generate each sentence
+		global_repeat_words = []
+		[ self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
 
 	def init(self, logger):
 		
@@ -459,7 +588,6 @@ class Generator(object):
 	def check(self, input_param_dict, logger):
 		if ('title' in input_param_dict) and (input_param_dict['title'] not in self._support_titles):
 			print input_param_dict['title']
-			print 
 			return "%s not defined in support_titles" % input_param_dict['title']
 
 	def generate(self, logger):
@@ -470,12 +598,19 @@ class Generator(object):
 		if format_sentences < 0:
 			raise ValueError("title[%s] not defined in dict" % self._title)
 
-		# combine important words with format sentence
-		(format_sentences, word_sentences) = self._combine_important_word_with_sentence(self._important_words, format_sentences, logger)
+		# combine important words with format sentences
+		word_sentences = self._combine_important_word_with_sentence(self._important_words, format_sentences, logger)
 
 		# decide rhythm and related words
 		self._generate_rhythm(format_sentences, word_sentences, logger)
 	
+		print 'final'
+		print format_sentences
+		print word_sentences
+
+		# now, generate poem
+		self._generate(format_sentences, word_sentences, logger)
+
 	def save(self, logger):
 		result_info = ""
 		if self._result:
@@ -505,14 +640,14 @@ if __name__ == '__main__':
 	try:
 		# As user input, for theme of poem, and title
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
-		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=True)
+		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
 		print user_input_dict["title"]
 
 		# Init
 		generator.force_data_build = user_input_dict["force_data_build"]
 		generator.init(logger)
-		
+
 		# Generate poem
 		error_info = generator.check(user_input_dict, logger)
 		if not error_info:
