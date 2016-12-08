@@ -194,6 +194,8 @@ class Generator(object):
 								break
 							first_word = word
 							second_word = sentence[idx+1]
+							if (first_word == u'、') or (second_word == u'、'):
+								continue
 							bigram_key = '__'.join([first_word, second_word])
 							if bigram_key not in self._bigram_count_dict:
 								self._bigram_count_dict[bigram_key] = 1
@@ -255,11 +257,11 @@ class Generator(object):
 		# mapping rhythm_end to words, 
 		self._count_general_rhythm_words(logger)
 
-		# split words
-		self._split_words(logger)
+		## split words
+		#self._split_words(logger)
 
-		# build word2vec
-		self._build_word2vec(logger)
+		## build word2vec
+		#self._build_word2vec(logger)
 
 		# save related data
 		for data_file in self._data_files:
@@ -427,8 +429,7 @@ class Generator(object):
 			logger.warning("Oops, no similar word generated based on important_word[%s] seperately" % str(important_word))
 
 		# order list of tuple, and fetch the first candidate_length of candidates
-		from operator import itemgetter
-		whole_similar_words = sorted(whole_similar_words, key=itemgetter(1), reverse=True)
+		whole_similar_words = sorted(whole_similar_words, key=operator.itemgetter(1), reverse=True)
 		candidate_words = whole_similar_words[:candidate_length]
 		logger.info("generate candidate_words[%s] based on important_words[%s]" % (str(candidate_words), str(important_words)))
 		#print 'whole', len(whole_similar_words), whole_similar_words
@@ -521,23 +522,77 @@ class Generator(object):
 	def _fill_word(self, direction, tofill_position, format_sentence, word_sentence, global_repeat_words, logger):
 		""" fill word by related word, and position"""
 
+		print 'tofill_position_in_fill_word', tofill_position
 		seed_word = word_sentence[tofill_position - direction]
+		print 'seed_word', seed_word
 
-		# check 2-gram dict
+		# check 2-gram dict and pingze order
+		if direction > 0:
+			bigram_word_dict = self._bigram_word_to_start_dict
+			verb_position = -1
+		else:
+			bigram_word_dict = self._bigram_word_to_end_dict
+			verb_position = 0
 
-		# check pingze order
+		print 'verb_position', verb_position
+
+		if seed_word in bigram_word_dict:
+			candidate_words = bigram_word_dict[seed_word]
+			candidate_verb_count_dict = {}
+			for candidate_word in candidate_words:
+
+				#print 'verb_candidate_word', candidate_word
+				candidate_verb = candidate_word[verb_position]
+				#print 'verb_candidate_verb', candidate_verb
+				if candidate_verb not in self._reverse_pingze_word_dict:
+					continue
+
+				# check pingze order first
+				if (format_sentence[tofill_position] != '0') and (self._reverse_pingze_word_dict[candidate_verb] != format_sentence[tofill_position]):
+					continue
+
+				# set initial, protect not exists
+				candidate_verb_count_dict[candidate_verb] = 1
+				if candidate_word in self._bigram_count_dict:
+					candidate_verb_count_dict[candidate_verb] = self._bigram_count_dict[candidate_word]
+
+			if candidate_verb_count_dict: # there exists some valid verb
+				selected_word = ""
+				max_count = -1
+				for candidate_verb, count in candidate_verb_count_dict.iteritems():
+					if count > max_count:
+						max_count = count
+						selected_word = candidate_verb
+				#candidate_verbs = sorted(candidate_verb_count_dict, key=operator.itemgetter(1), reverse=True)
+				#print candidate_verbs
+				#print candidate_verbs[0]
+				#selected_word = candidate_verbs[0][0]
+			else:
+				print 'visit2'
+				if candidate_words: # no pingze satisfy, random select one
+					idx = random.randint(0, len(candidate_words))
+					selected_word = candidate_words[idx][verb_position]
+				else:
+					raise ValueError("word exist in bigram_word_dict, but it's empty")
+		else: # word not exists in 2-gram
+			pass
 
 		# select and fill
-		selected_word = u""
 		word_sentence[tofill_position] = selected_word
 
-	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, logger):
+		print 'fill', tofill_position, selected_word, word_sentence
+
+	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, logger, level=0):
 		""" recursion generate"""
 
+		print 'current level', level
+
 		sentence_length = len(format_sentence)
+		print 'len word_sentence', len(word_sentence.keys()), sentence_length
 
 		# all position filled, return
 		if len(word_sentence.keys()) == sentence_length:
+			print 'recursion finish'
 			return
 
 		# show candidate positions based on current filled positions
@@ -548,8 +603,11 @@ class Generator(object):
 		if len(candidate_positions) == 1:
 			tofill_position = candidate_positions[0]
 		else: # random choose one
-			idx = random.randint(0, len(candidate_positions))
+			idx = random.randint(0, len(candidate_positions) - 1)
 			tofill_position = candidate_positions[idx]
+
+		print 'candidate_positions', candidate_positions
+		print 'tofill_positoin', tofill_position
 
 		up_fill_direction = (tofill_position - 1) in word_sentence
 		down_fill_direction = (tofill_position + 1) in word_sentence
@@ -563,16 +621,35 @@ class Generator(object):
 
 		# fill word one by one
 		if up_fill_direction:
+			print 'up_fill'
 			self._fill_word(1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
 		else:
+			print 'down_fill'
 			self._fill_word(-1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
+	
+		level = level + 1
+		self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger, level)
 
 	def _generate(self, format_sentences, word_sentences, logger):
 		""" generate poem based on important words and rhythm word"""
 
 		# generate each sentence
 		global_repeat_words = []
-		[ self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
+		#[ self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
+
+		test_sentence = ""
+		for (format_sentence, word_sentence) in zip(format_sentences, word_sentences):
+			print 'final'
+			print format_sentence
+			print word_sentence
+
+			self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger)
+			print 'final_fill'
+			print word_sentence
+			for word in word_sentence.values():
+				test_sentence += word
+			test_sentence += ","
+		print test_sentence
 
 	def init(self, logger):
 		
@@ -604,10 +681,6 @@ class Generator(object):
 		# decide rhythm and related words
 		self._generate_rhythm(format_sentences, word_sentences, logger)
 	
-		print 'final'
-		print format_sentences
-		print word_sentences
-
 		# now, generate poem
 		self._generate(format_sentences, word_sentences, logger)
 
@@ -640,7 +713,9 @@ if __name__ == '__main__':
 	try:
 		# As user input, for theme of poem, and title
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
-		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
+		user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
 		print user_input_dict["title"]
 
@@ -650,7 +725,8 @@ if __name__ == '__main__':
 
 		# Generate poem
 		error_info = generator.check(user_input_dict, logger)
-		if not error_info:
+		#if not error_info:
+		if True:
 			generator.important_words = user_input_dict["important_words"]
 			generator.title = user_input_dict["title"]
 		
