@@ -23,8 +23,6 @@ import operator
 
 from title_rhythm import TitleRhythmDict
 
-basepath = os.path.abspath(os.path.dirname(__file__))
-
 
 class Generator(object):
 	""" Generator of Chinese Poem
@@ -682,47 +680,3 @@ class Generator(object):
 	
 		# now, generate poem
 		return self._generate(format_sentences, word_sentences, logger)
-
-
-if __name__ == '__main__':
-	confpath = os.path.join(basepath, 'conf/poem.conf')
-	conf = ConfigParser.RawConfigParser()
-	conf.read(confpath)
-	logging.basicConfig(filename=os.path.join(basepath, 'logs/chinese_poem.log'), level=logging.DEBUG,
-		format = '[%(filename)s:%(lineno)s - %(funcName)s %(asctime)s;%(levelname)s] %(message)s',
-		datefmt = '%a, %d %b %Y %H:%M:%S'
-	)
-	logger = logging.getLogger('ChinesePoem')
- 
-	generator = Generator(basepath, conf)
-	try:
-		# As user input, for theme of poem, and title
-		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
-		#user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
-		#user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
-		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
-		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
-		print user_input_dict["title"]
-
-		# Init
-		generator.force_data_build = user_input_dict["force_data_build"]
-		generator.init(logger)
-
-		# Generate poem
-		error_info = generator.check(user_input_dict, logger)
-		if not error_info:
-			generator.important_words = user_input_dict["important_words"]
-			generator.title = user_input_dict["title"]
-		
-			logger.info("generate poem for title %s, with important words %s" % (generator.title, str(generator.important_words)))
-			print generator.generate(logger)
-		else:
-			print error_info
-		   
-	except ValueError as e:
-		logger.exception(e)
-		print e
-	except Exception as e:
-		logger.exception(e)
-		print e
-
