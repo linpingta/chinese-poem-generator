@@ -547,6 +547,10 @@ class Generator(object):
 				if candidate_verb not in self._reverse_pingze_word_dict:
 					continue
 
+				# not use repeated word
+				if candidate_verb in global_repeat_words:
+					continue
+
 				# check pingze order first
 				if (format_sentence[tofill_position] != '0') and (self._reverse_pingze_word_dict[candidate_verb] != format_sentence[tofill_position]):
 					continue
@@ -563,10 +567,6 @@ class Generator(object):
 					if count > max_count:
 						max_count = count
 						selected_word = candidate_verb
-				#candidate_verbs = sorted(candidate_verb_count_dict, key=operator.itemgetter(1), reverse=True)
-				#print candidate_verbs
-				#print candidate_verbs[0]
-				#selected_word = candidate_verbs[0][0]
 			else:
 				print 'visit2'
 				if candidate_words: # no pingze satisfy, random select one
@@ -635,8 +635,6 @@ class Generator(object):
 
 		# generate each sentence
 		global_repeat_words = []
-		#[ self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
-
 		test_sentence = ""
 		for (format_sentence, word_sentence) in zip(format_sentences, word_sentences):
 			print 'final'
@@ -644,6 +642,8 @@ class Generator(object):
 			print word_sentence
 
 			self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger)
+			[ global_repeat_words.append(word) for word in word_sentence.values() ]
+
 			print 'final_fill'
 			print word_sentence
 			for word in word_sentence.values():
@@ -714,8 +714,8 @@ if __name__ == '__main__':
 		# As user input, for theme of poem, and title
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
 		#user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
-		user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
-		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
+		user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
 		print user_input_dict["title"]
 
