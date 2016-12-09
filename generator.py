@@ -26,6 +26,12 @@ from title_rhythm import TitleRhythmDict
 basepath = os.path.abspath(os.path.dirname(__file__))
 
 
+def my_unicode(lst):
+	return repr(lst).decode('unicode-escape')
+
+	
+
+
 class Generator(object):
 	""" Generator of Chinese Poem
 	"""
@@ -94,6 +100,19 @@ class Generator(object):
 	@force_data_build.setter
 	def force_data_build(self, value):
 		self._force_data_build = value
+
+	def _show_word_sentence(self, format_sentence, word_sentence, logger):
+		logger.info("format_sentence %s" % my_unicode(format_sentence))
+		tmp_sentence = []
+		for i in range(len(format_sentence)):
+			if i in word_sentence:
+				tmp_sentence.append(word_sentence[i])
+			else:
+				tmp_sentence.append("X")
+		logger.info("word_sentence %s" % my_unicode(tmp_sentence))
+
+	def _show_word_sentences(self, format_sentences, word_sentences, logger):
+		[ self._show_word_sentence(format_sentence, word_sentence, logger) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
 
 	def _build_title_pingze_dict(self, logger):
 		for title, content_rhythm in TitleRhythmDict.iteritems():
@@ -394,55 +413,56 @@ class Generator(object):
 
 	def _combine_important_word_with_sentence(self, important_words, format_sentences, logger):
 		""" 
-		make every sentence has one related importance word
-		promise pingze order and position order
+		make every sentence has one related importanct word
+		and promise pingze order as well as position order
 
 		we try to use whole word to find similar words first,
 		if not, then use each word to find
 		"""
-		keyword_sentences = []
+		word_sentences = []
 
 		sentence_length = len(format_sentences)
-		candidate_length = 3 * sentence_length
+		candidate_length = 5 * sentence_length
+
+		# if put all words in word2vec.most_similar function, and any one of words not exist will lead to call fail
+		# so try to check all words and get most common valid words, ugly but seems no official func given
+		useful_important_words = []
+		for important_word in important_words:
+			try:
+				similar_words = self._word_model.most_similar(positive=[ important_word ], topn=candidate_length)
+			except KeyError as e1:
+				pass
+			else:
+				useful_important_words.append(important_word)
+
+		# trick here if no useful word given
+		if not useful_important_words:
+			useful_important_words = [u"菊花"]
 
 		whole_similar_words = []
 		try:
-			# treat important words as whole first
-			whole_similar_words = self._word_model.most_similar(positive=important_words, topn=candidate_length)
-			logger.info("get whole_similar_words[%s] based on important_words[%s] as whole" % (str(whole_similar_words), str(important_words)))
+			whole_similar_words = self._word_model.most_similar(positive=useful_important_words, topn=candidate_length)
+			logger.info("get whole_similar_words %s based on important_words %s as whole" % (my_unicode(whole_similar_words), my_unicode(important_words)))
 		except KeyError as e:
-			# treat important word seperately
-			whole_similar_words = []
-			for important_word in important_words:
-				try:
-					similar_words = self._word_model.most_similar(positive=[ important_word ], topn=candidate_length)
-				except KeyError as e1:
-					pass
-				else:
-					for (similar_word, similarity) in similar_words:
-						print similar_word, similarity
-					whole_similar_words.extend(similar_words)
-					logger.info("get similar_words[%s] based on important_word[%s] seperately" % (str(similar_words), str(important_word)))
+			logger.exception(e)
 
 		# Oops, we don't know what user want, create one randomly
 		if not whole_similar_words:
 			logger.warning("Oops, no similar word generated based on important_word[%s] seperately" % str(important_word))
-
-		# order list of tuple, and fetch the first candidate_length of candidates
-		whole_similar_words = sorted(whole_similar_words, key=operator.itemgetter(1), reverse=True)
-		candidate_words = whole_similar_words[:candidate_length]
-		logger.info("generate candidate_words[%s] based on important_words[%s]" % (str(candidate_words), str(important_words)))
-		#print 'whole', len(whole_similar_words), whole_similar_words
-		print 'candidate', len(candidate_words), candidate_words
+		else:
+			# order list of tuple, and fetch the first candidate_length of candidates
+			whole_similar_words = sorted(whole_similar_words, key=operator.itemgetter(1), reverse=True)
+			candidate_words = whole_similar_words[:candidate_length]
+			logger.info("generate candidate_words %s based on important_words %s" % (my_unicode(candidate_words), my_unicode(important_words)))
 
 		# at now, we promise whole_similar_words have enough data
 		# now, combine them with sentences
 		already_used_words = []
 		for format_sentence in format_sentences:
-			keyword_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
-			keyword_sentences.append(keyword_sentence)
+			word_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
+			word_sentences.append(word_sentence)
 
-		return keyword_sentences
+		return word_sentences
 
 	def _generate_common_rhythm(self, is_ping=True):
 		""" generate common rhythm"""
@@ -676,6 +696,7 @@ class Generator(object):
 
 		# combine important words with format sentences
 		word_sentences = self._combine_important_word_with_sentence(self._important_words, format_sentences, logger)
+		self._show_word_sentences(format_sentences, word_sentences, logger)
 
 		# decide rhythm and related words
 		self._generate_rhythm(format_sentences, word_sentences, logger)
@@ -713,10 +734,11 @@ if __name__ == '__main__':
 		if not error_info:
 			generator.important_words = user_input_dict["important_words"]
 			generator.title = user_input_dict["title"]
-		
-			logger.info("generate poem for title %s, with important words %s" % (generator.title, str(generator.important_words)))
+
+			logger.info("generate poem for title %s, with important words %s" % (generator.title, my_unicode(generator.important_words)))
 			print generator.generate(logger)
 		else:
+			logger.error("dont generate poem because of %s" % error_info)
 			print error_info
 		   
 	except ValueError as e:

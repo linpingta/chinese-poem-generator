@@ -650,14 +650,13 @@ class Generator(object):
 		return test_sentence
 
 	def init(self, logger):
-
 		if self._force_data_build:
 			self._init_data_build(logger)
 		else:
 			try:
 				self._load_data_build(logger)
 			except Exception as e:
-				logger.exception(e)
+				logger.info("re-init related data")
 				self._init_data_build(logger)
 	
 	def check(self, input_param_dict, logger):

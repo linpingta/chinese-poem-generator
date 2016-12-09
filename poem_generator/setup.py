@@ -9,5 +9,5 @@ setup(name='poem_generator',
 	packages=['poem_generator'],
 	install_requires=[
 		"jieba", "gensim"
-	]
+	],
 	zip_safe=False)
