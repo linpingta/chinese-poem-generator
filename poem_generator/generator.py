@@ -826,15 +826,13 @@ if __name__ == '__main__':
  
 	generator = Generator(basepath, conf)
 	try:
-		# special case test
+		# test
 		user_input_dict = dict(title=u"南乡子", important_words=[], force_data_build=False)
 		user_input_dict = dict(title=u"南乡子", important_words=[u"计算机"], force_data_build=False)
 
-		user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
-
 		# As user input, for theme of poem, and title
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
-		user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"山川", u"流水"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
