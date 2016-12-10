@@ -63,6 +63,8 @@ class Generator(object):
 		self._reverse_rhythm_word_dict = {}
 		self._reverse_pingze_word_dict = {}
 
+		self._sentences = []
+
 		# split related data
 		self._split_sentences = []
 		self._word_model = None
@@ -77,7 +79,7 @@ class Generator(object):
 		
 		# storage of related precalculated data
 		self._data_files = [
-			"title_pingze_dict", "title_delimiter_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences", "bigram_word_to_start_dict", "bigram_word_to_end_dict", "bigram_count_dict"
+			"title_pingze_dict", "title_delimiter_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences", "bigram_word_to_start_dict", "bigram_word_to_end_dict", "bigram_count_dict", "sentences"
 		]
 
 		# store generated poem
@@ -238,6 +240,8 @@ class Generator(object):
 				sentences = re.split(u"[，。]", line)
 				for sentence in sentences:
 					if sentence:
+						self._sentences.append(sentence)
+
 						final_word = sentence[-1]
 						#print 'final', final_word
 						if final_word not in self._reverse_rhythm_word_dict:
@@ -714,6 +718,48 @@ class Generator(object):
 		else:
 			return True
 
+	def _search_generate(self, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, already_used_sentences, already_used_rhythm_words, logger):
+		""" try to search already exist word"""
+
+		# no search for only rhythm sentence
+		if len(word_sentence) <= 1:
+			return False
+
+		sentence_length = len(format_sentence)
+		if sentence_length <= 2:
+			return False
+
+		for sentence in self._sentences:
+			if sentence_length != len(sentence):
+				continue
+			for word in word_sentence.values():
+				if word not in sentence:
+					continue
+
+			# now, check rhythm
+			current_rhythm_word = word_sentence[len(format_sentence) - 1]
+			if current_rhythm_word not in self._reverse_rhythm_word_dict:
+				continue
+			current_rhythm = self._reverse_rhythm_word_dict[current_rhythm_word]
+			sentence_word = sentence[-1]
+			if sentence_word not in self._reverse_rhythm_word_dict:
+				continue
+			if sentence_word in already_used_rhythm_words:
+				continue
+			sentence_rhythm = self._reverse_rhythm_word_dict[sentence_word]
+
+			if sentence_rhythm == current_rhythm:
+				sentence_dict = {}
+				for i, word in enumerate(sentence):
+					sentence_dict[i] = word
+				if sentence_dict in already_used_sentences:
+					continue
+				u = random.random()
+				if u < 0.8:
+					continue
+				return sentence_dict
+		return False
+
 	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger, level=0):
 		""" recursion generate single sentence"""
 
@@ -800,6 +846,8 @@ class Generator(object):
 		# generate each sentence
 		# avoid words between sentences
 		global_repeat_words = []
+		already_used_rhythm_words = []
+		already_used_sentences = []
 		for i, (format_sentence, word_sentence) in enumerate(zip(format_sentences, word_sentences)):
 			result_sub_sentence = ""
 
@@ -812,12 +860,23 @@ class Generator(object):
 					current_repeat_dict[word] += 1
 
 			self._show_word_sentence(format_sentence, word_sentence, logger, "omg origin:s %d" % (i+1))
-			self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger)
+			u = random.random()
+			if u < 0.5:
+				search_sentence = self._search_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, already_used_sentences, already_used_rhythm_words, logger)
+				if not search_sentence:
+					self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger)
+				else:
+					logger.info("[%d] use search generate for word sentence" % i)
+					word_sentence = search_sentence
+					already_used_sentences.append(search_sentence)
+			else:
+				self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger)
 			self._show_word_sentence(format_sentence, word_sentence, logger, "omg final:s %d" % (i+1))
 
 			for word in word_sentence.values():
 				result_sub_sentence += word
 				global_repeat_words.append(word)
+			already_used_rhythm_words.append(word_sentence[len(format_sentence) - 1])
 			result_sentence_list.append(result_sub_sentence)
 
 		# fill with delimiter
@@ -896,19 +955,17 @@ if __name__ == '__main__':
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
 		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
 
-		# if True:
-		for title in TitleRhythmDict.keys():
-			#title = u"浣溪沙"
+		if True:
+		#for title in TitleRhythmDict.keys():
+			title = u"浣溪沙"
 			#title = u"水调歌头"
-			title = title.decode()
+			#title = title.decode()
 			print title
 			mock_tags = {"天空":{"text":"天空","confidence":99},"草":{"text":"草","confidence":99},"户外":{"text":"户外","confidence":99},"山":{"text":"山","confidence":99},"田地":{"text":"田地","confidence":98},"绿色":{"text":"绿色","confidence":93},"自然":{"text":"自然","confidence":93},"动物":{"text":"动物","confidence":81},"绿色的":{"text":"绿色的","confidence":70},"放牧":{"text":"放牧","confidence":70},"打开":{"text":"打开","confidence":65},"牧场":{"text":"牧场","confidence":64},"青葱的":{"text":"青葱的","confidence":56},"高地":{"text":"高地","confidence":48},"黄牛":{"text":"黄牛","confidence":42},"平原":{"text":"平原","confidence":27},"距离":{"text":"距离","confidence":13}}
 			important_words = []
 			for mock_tag in mock_tags.keys():
 				important_words.append(mock_tag.decode())
 			user_input_dict = dict(title=title, important_words=important_words, force_data_build=False)
-
-			print user_input_dict["title"]
 
 			# Init
 			generator.force_data_build = user_input_dict["force_data_build"]
