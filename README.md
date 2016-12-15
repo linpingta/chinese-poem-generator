@@ -2,6 +2,66 @@
 根据用户输入的关键字，生成宋词
 这是公司黑客马拉松的一个项目，此处代码文件和[chinese-poem-generator](https://github.com/imagetellerD/chinese-poem-generator)基本一致，是因为后者也是我开发的，但比赛要求建立在公共账户内，所以不得不重复了两个项目，后续更新会以此为主。
 
+# 安装
+可以从pip上下载安装包：
+
+	pip install ts_chinese_poem_generator
+
+也可以下载源码后，安装到指定路径：
+
+	python setup.py install --prefix=$HOME
+项目依赖[jieba](https://github.com/fxsjy/jieba)提供分词服务，依赖[word2vec](https://radimrehurek.com/gensim/)提供词相似度计算。
+
+# 使用
+项目的主体内容均在generator.py中，安装依赖后，可以直接调用 python generator.py ，默认会遍历所有词牌，为每个词牌生成一首词。
+在其它模块中引用类似如下方式：
+
+	from poem_generator.generator import Generator
+	
+	
+	class OmgPoemGenerator(object):
+    	    def __init__(self, conf):
+        	self.conf = conf
+
+	    def generatePoem(self, title, tags, descriptions):
+		logger = logging.getLogger('omg.poem')
+		logger.info("generate poem begins")
+
+		generator = Generator(basepath, self.conf)
+		try:
+
+		    # str to unicode
+		    title = title.decode()
+		    important_words = []
+		    for tag in tags:
+			important_words.append(tag.tag.decode())
+
+		    logger.info("user input title %s, important_words %s, descriptions %s" % (title, str(important_words), str(descriptions)))
+		    user_input_dict = dict(title=title, important_words=important_words, descriptions=descriptions, force_data_build=False)
+
+		    # Init
+		    generator.search_ratio = random.random() * 0.8
+		    generator.force_data_build = user_input_dict["force_data_build"]
+		    generator.init(logger)
+
+		    # Generate poem
+		    error_info = generator.check(user_input_dict, logger)
+		    if not error_info:
+			generator.title = user_input_dict["title"]
+			generator.important_words = user_input_dict["important_words"]
+
+			logger.info("generate poem for title %s, with important words %s" % (generator.title, str(generator.important_words)))
+			result = generator.generate(logger)
+		    else:
+			result = error_info
+		    logger.info("final generate poem %s" % result)
+	      except ValueError as e:
+		    logger.exception(e)
+		except Exception as e:
+		    logger.exception(e)
+		finally:
+		    return result.encode()
+
 # 问题来源
 我们拍了照片，把其中的物体关键字提取后（这个需要图片识别API，也可能有翻译API），把识别来的tag作为场景关键词，基于关键词做诗词创作。我们设想的一个场景是：在外旅游，看到大好风景却不知道如何描述。。拍一幅照片，让我们为你的微信朋友圈增加文艺范。
 
@@ -103,11 +163,11 @@
       	目送征帆双鸳鸯，一春回顾影风光，东西江上度刘郎
       	卷地久阿谁为寿，园林修竹是清香，依稀有意向沧浪
 
-      	输入： tags：[菊花，院子]，title：水调歌头
-      	输出：
+      		输入： tags：[菊花，院子]，title：水调歌头
+      		输出：
       
-      	不踏青云酒,重数沈烟收.当时重九枯朽,烂醉里休休.细看花期惟有,邻里风流三友,不久长南楼.尽道分携手,三分付千秋. | 
-      	西北斗,须记取,杏梁州.渡江太守,健笔端正尔秦讴.七十五年祝寿,更把芳时开口,天远宦游流,日日登高首,受用处曾游.
+      		不踏青云酒,重数沈烟收.当时重九枯朽,烂醉里休休.细看花期惟有,邻里风流三友,不久长南楼.尽道分携手,三分付千秋. | 
+      		西北斗,须记取,杏梁州.渡江太守,健笔端正尔秦讴.七十五年祝寿,更把芳时开口,天远宦游流,日日登高首,受用处曾游.
 
 ### 未来展望
 这方面目前国内最好的成果，应该来自[清华大学语音与语言实验中心](http://nlp.cslt.org/)提供的[作诗机](http://www.guancha.cn/Science/2016_03_21_354505.shtml)。他们的具体代码并没有开源，但可以确定是基于深度学习的递归神经网络（RNN）。所以从实际应用的角度讲，在深度学习方面多花时间，会优于按规则生成的方案，尤其是，如果我们需要把自动生成诗歌的目标转换为自动生成文案时，不再有韵脚格律的限制，规则的方法可能是会更受局限的（当然如果是生成五言广告语就忽略我）。
