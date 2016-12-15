@@ -1,8 +1,9 @@
 from setuptools import setup
 
-setup(name='poem_generator',
-	version='0.1',
-	description='Poem Generator',
+setup(name='chinese_poem_generator',
+	version='0.2',
+	description='Chinese Poem Generator',
+	url="https://github.com/linpingta/chinese-poem-generator.git",
 	author='ChuTong',
 	author_email='linpingta@163.com',
 	license='MIT',

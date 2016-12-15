@@ -17,11 +17,26 @@ import logging
 import re
 import simplejson as json
 import jieba
+import jieba.posseg as pseg
 from gensim import models
 import random
 import operator
 
 from title_rhythm import TitleRhythmDict
+
+basepath = os.path.abspath(os.path.dirname(__file__))
+
+
+def my_unicode(lst):
+	return repr(lst).decode('unicode-escape')
+
+def my_unicode_sd(d):
+	lst = [ word for (word, count) in d ]
+	return my_unicode(lst)
+
+def my_unicode_d(d):
+	lst = [ word for word, count in d.iteritems() ]
+	return my_unicode(lst)
 
 
 class Generator(object):
@@ -41,11 +56,14 @@ class Generator(object):
 
 		# load from data file
 		self._title_pingze_dict = {}
+		self._title_delimiter_dict = {}
 		self._pingze_words_dict = {}
 		self._pingze_rhythm_dict = {}
 		self._rhythm_word_dict = {}
 		self._reverse_rhythm_word_dict = {}
 		self._reverse_pingze_word_dict = {}
+
+		self._sentences = []
 
 		# split related data
 		self._split_sentences = []
@@ -61,13 +79,19 @@ class Generator(object):
 		
 		# storage of related precalculated data
 		self._data_files = [
-			"title_pingze_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences", "bigram_word_to_start_dict", "bigram_word_to_end_dict", "bigram_count_dict"
+			"title_pingze_dict", "title_delimiter_dict", "pingze_words_dict", "pingze_rhythm_dict", "rhythm_word_dict", "reverse_rhythm_word_dict", "reverse_pingze_word_dict", "word_count_dict", "rhythm_count_dict", "split_sentences", "bigram_word_to_start_dict", "bigram_word_to_end_dict", "bigram_count_dict", "sentences"
 		]
 
 		# store generated poem
 		self._result = ""
 		# store error reason if no poem generated
 		self._error_info = ""
+
+		self._search_ratio = 0
+
+	@property
+	def search_ratio(self):
+		return self._search_ratio
 
 	@property
 	def important_words(self):
@@ -81,6 +105,10 @@ class Generator(object):
 	def force_data_build(self):
 		return self._force_data_build
 
+	@search_ratio.setter
+	def search_ratio(self, value):
+		self._search_ratio = value
+
 	@important_words.setter
 	def important_words(self, value):
 		self._important_words = value
@@ -93,11 +121,45 @@ class Generator(object):
 	def force_data_build(self, value):
 		self._force_data_build = value
 
+	def _get_top_words_with_count(self, word_count_dict, topN=1):
+		words = []
+		if not word_count_dict:
+			return u""
+		word_count_dict = sorted(word_count_dict.items(), key=operator.itemgetter(1), reverse=True)
+		for i, (word, count) in enumerate(word_count_dict):
+			if i >= topN:
+				break
+			words.append((word, count))
+		return words
+
+	def _get_top_word_uniform_random(self, word_count_dict, topN=1):
+		words_with_count = self._get_top_words_with_count(word_count_dict, topN)
+		words = []
+		[ words.append(word) for (word, count) in words_with_count ]
+		idx = random.randint(0, len(words)-1)
+		return words[idx]
+
+	def _get_top_word_weight_random(self, word_count_dict, topN=1):
+		words_with_count = self._get_top_words_with_count(word_count_dict, topN)
+		return self._weighted_choice(words_with_count)
+
+	def _show_word_sentence(self, format_sentence, word_sentence, logger, comment="omg"):
+		logger.info("%s: format_sentence %s" % (comment, my_unicode(format_sentence)))
+		tmp_sentence = []
+		for i in range(len(format_sentence)):
+			if i in word_sentence:
+				tmp_sentence.append(word_sentence[i])
+			else:
+				tmp_sentence.append("X")
+		logger.info("%s: word_sentence %s" % (comment, my_unicode(tmp_sentence)))
+
+	def _show_word_sentences(self, format_sentences, word_sentences, logger, comment="omg"):
+		[ self._show_word_sentence(format_sentence, word_sentence, logger,comment) for (format_sentence, word_sentence) in zip(format_sentences, word_sentences) ]
+
 	def _build_title_pingze_dict(self, logger):
 		for title, content_rhythm in TitleRhythmDict.iteritems():
 			#print title
 			#print content_rhythm
-			#print re.split(", |. |\*|`", content_rhythm)
 			sentences = re.findall(r"[0-9]+", content_rhythm)
 			new_sentences = []
 			for sentence in sentences:
@@ -111,6 +173,11 @@ class Generator(object):
 						new_sentence += "1"
 				new_sentences.append(new_sentence)
 			self._title_pingze_dict[title.decode()] = new_sentences
+			delimiters = []
+			for word in content_rhythm:
+				if word in [",", ".", "`", "|"]:
+					delimiters.append(word)
+			self._title_delimiter_dict[title.decode()] = delimiters
 
 	def _build_pingze_rhythm_words_dict(self, logger):
 		with open(self._ci_rhythm_file, 'r') as fp_r:
@@ -126,30 +193,42 @@ class Generator(object):
 					#print line
 					#print len(line)
 					next_line = fp_r.readline().strip().decode("utf-8")
-					#print 'next', next_line
-					words = []
-					[ words.append(word) for word in next_line if word not in ["[", "]"] ]
+
 					rhythm_word = line[-2]
-					self._rhythm_word_dict[rhythm_word] = words
 
 					is_ping = True
 					if u"平" in line: # ping related
-						self._pingze_words_dict.setdefault('1', []).extend(words)
 						self._pingze_rhythm_dict.setdefault('1', []).append(rhythm_word)
 						is_ping = True
 					else: # ze related
-						self._pingze_words_dict.setdefault('2', []).extend(words)
 						self._pingze_rhythm_dict.setdefault('2', []).append(rhythm_word)
 						is_ping = False
 
 					# build reverse dict for count later
-					for word in words:
+					invalid_flag = False
+					invalid_value = []
+					words = []
+					for word in next_line:
+						if word == u"[":
+							invalid_flag = True
+						if invalid_flag:
+							invalid_value.append(word)
+							if word == u"]":
+								invalid_flag = False
+							continue
 						self._reverse_rhythm_word_dict[word] = rhythm_word
-
 						if is_ping: # ping related
 							self._reverse_pingze_word_dict[word] = '1'
 						else: # ze related
 							self._reverse_pingze_word_dict[word] = '2'
+						words.append(word)
+
+					self._rhythm_word_dict[rhythm_word] = words
+
+					if u"平" in line: # ping related
+						self._pingze_words_dict.setdefault('1', []).extend(words)
+					else: # ze related
+						self._pingze_words_dict.setdefault('2', []).extend(words)
 
 				#count += 1
 				#if count > 2:
@@ -171,6 +250,8 @@ class Generator(object):
 				sentences = re.split(u"[，。]", line)
 				for sentence in sentences:
 					if sentence:
+						self._sentences.append(sentence)
+
 						final_word = sentence[-1]
 						#print 'final', final_word
 						if final_word not in self._reverse_rhythm_word_dict:
@@ -267,17 +348,6 @@ class Generator(object):
 			with open(os.path.join(self.basepath, "data", data_file), "w") as fp_w:
 				json.dump(value, fp_w)
 
-		print 'len', len(self._reverse_pingze_word_dict.keys())
-		count_ping = 0
-		count_ze = 0
-		for key, item in self._reverse_pingze_word_dict.iteritems():
-			if item == '1':
-				count_ping = count_ping + 1
-			if item == '2':
-				count_ze = count_ze + 1
-		print count_ping
-		print count_ze
-		
 
 	def _load_data_build(self, logger):
 		for data_file in self._data_files:
@@ -306,13 +376,16 @@ class Generator(object):
 			return []
 
 	def _weighted_choice(self, choices, already_check_choices=[]):
-		total = sum(w for (c, w) in choices)
+		sub_choices = []
+		for (c,w) in choices:
+			if c not in already_check_choices:
+				sub_choices.append((c,w))
+		total = sum(w for (c, w) in sub_choices)
 		r = random.uniform(0, total)
 		upto = 0
-		for c, w in choices:
+		for c, w in sub_choices:
 			if upto + w >= r:
-				if c not in already_check_choices:
-					return c
+				return c
 			upto += w
 
 	def _compare_words(self, format_words, input_words):
@@ -330,117 +403,152 @@ class Generator(object):
 		"""
 		position_word_dict = {}
 
-		print 'format_sentence', format_sentence
+		logger.info('single sentence: format_sentence %s' % my_unicode(format_sentence))
+		logger.debug('single sentence: already_used_words %s' % my_unicode(already_used_words))
 
 		# remove already used words
-		new_candidate_words = [ word for word in candidate_words if word not in already_used_words ]
+		logger.debug('single sentence: origin_candidate_words %s' % my_unicode(candidate_words))
+		new_candidate_words = [ word for word in candidate_words if word[0] not in already_used_words ]
+		logger.debug('single sentence: new_candidate_words %s' % my_unicode(new_candidate_words))
 		if not new_candidate_words:
-			logger.warning("use all words, that shouldnt happen")
+			logger.warning("use all words, that should not happen")
 			new_candidate_words = candidate_words
 
 		sentence_length = len(format_sentence)
-		positions = self._check_position_by_sentence_length(sentence_length, logger)
-		if not positions: # don't consider position, alread consider pingze
-			logger.info("sentence_length[%d] dont check position, as no defined" % sentence_length)
 
-		print 'positions', positions
+		# chekc delimiter for sentence
+		positions = self._check_position_by_sentence_length(sentence_length, logger)
+		if not positions: # don't consider position, only consider pingze
+			logger.info("sentence_length[%d] dont check position, as not defined" % sentence_length)
+
+		logger.debug("single sentence: positions %s" % str(positions))
 
 		# random fill first
 		random_already_check_words = []
 		is_word_found = False
-		for i in range(5):
+		for i in range(10):
+
+			# randomly select one candidate word
 			candidate_word = self._weighted_choice(new_candidate_words, random_already_check_words)
 			if not candidate_word:
-				raise ValueError("candidate_word %s" % candidate_word)
+				raise ValueError("candidate_word %s not exist in %s" % (candidate_word, my_unicode(new_candidate_words)))
 			random_already_check_words.append(candidate_word)
-
-			print 'candidate_word', candidate_word
+			logger.debug("single sentence: iter[%d] candidate_word %s" % (i, candidate_word))
 
 			# get word pingze
 			word_pingze = []
+			word_pingze_flag = True
 			for candidate_word_elem in candidate_word:
 				if candidate_word_elem not in self._reverse_pingze_word_dict:
+					word_pingze_flag = False
 					break
 				word_pingze.append(self._reverse_pingze_word_dict[candidate_word_elem])
-			print 'word_pingze', word_pingze
+			logger.debug("single sentence: iter[%d] candidate_word %s, word_pingze %s" % (i, candidate_word, my_unicode(word_pingze)))
 
-			if len(word_pingze) != len(candidate_word):
+			if (not word_pingze_flag) or (len(word_pingze) != len(candidate_word)):
+				logger.warning("word_pingze len[%d] not equal to word len[%d]" % (len(word_pingze), len(candidate_word)))
 				continue
 
-			for j in range(len(positions) - 1): # dont put in rhythm part
+			for j in range(len(positions) - 1): # dont check rhythm part
 				pos_start = positions[j]
 				pos_end = positions[j+1]
 				tmp_word = format_sentence[pos_start:pos_end] 
+				logger.debug('iter[%d] pos_iter[%d] word_pingze %s, tmp_word %s' % (i, j, word_pingze, tmp_word))
 				if (len(tmp_word) == len(word_pingze)) and (self._compare_words(tmp_word, word_pingze)):
-					# write word here
+					# write word with position
 					for p, m in enumerate(range(pos_start, pos_end)):
 						position_word_dict[m] = candidate_word[p]
 					is_word_found = True
 					break
 
 			if is_word_found:
+				already_used_words.append(candidate_word)
+				logger.info("single sentence: add candidate_word %s to word_sentence" % candidate_word)
 				break
-
-		# force fill by order
-		pass
-
-		print 'positoin_word_dict', position_word_dict
-		for key, item in position_word_dict.iteritems():
-			print key, item
 
 		return position_word_dict
 
+	def _filter_simliar_words(self, whole_similar_words, logger):
+		filtered_similar_words = []
+		for (word, similarity) in whole_similar_words:
+			logger.debug("word[%s] len[%d]" % (word, len(word)))
+
+			word_elems = pseg.cut(word)
+			word_flag_valid = False
+			for word_elem, flag in word_elems:
+				logger.debug("word[%s] word_elem[%s] flag[%s]" % (word, word_elem, flag))
+				if flag in ['n', 'ns', 'nr', 't']:
+					word_flag_valid = True
+					break
+				
+			if len(word) < 2 and (not word_flag_valid):
+				continue
+
+			filtered_similar_words.append((word, similarity))
+		return filtered_similar_words
+
 	def _combine_important_word_with_sentence(self, important_words, format_sentences, logger):
 		""" 
-		make every sentence has one related importance word
-		promise pingze order and position order
+		make every sentence has one related importanct word
+		and promise pingze order as well as position order
 
 		we try to use whole word to find similar words first,
 		if not, then use each word to find
 		"""
-		keyword_sentences = []
+		word_sentences = []
 
 		sentence_length = len(format_sentences)
-		candidate_length = 3 * sentence_length
+		candidate_length = 5 * sentence_length
+
+		# if put all words in word2vec.most_similar function, and any one of words not exist will lead to call fail
+		# so try to check all words and get most common valid words, ugly but seems no official func given
+		useful_important_words = []
+		for important_word in important_words:
+			try:
+				similar_words = self._word_model.most_similar(positive=[ important_word ], topn=candidate_length)
+			except KeyError as e1:
+				pass
+			else:
+				useful_important_words.append(important_word)
+
+		# trick here if no useful word given
+		if not useful_important_words:
+			logger.warning("no valid tags %s in user input, trick" % my_unicode(useful_important_words))
+			useful_important_words = [u"菊花"]
+
+		# cut useful words, it seems too many useful words not ok than simple one
+		max_useful_words_len = 3
+		if len(useful_important_words) > max_useful_words_len:
+			useful_important_words = useful_important_words[:max_useful_words_len]
 
 		whole_similar_words = []
 		try:
-			# treat important words as whole first
-			whole_similar_words = self._word_model.most_similar(positive=important_words, topn=candidate_length)
-			logger.info("get whole_similar_words[%s] based on important_words[%s] as whole" % (str(whole_similar_words), str(important_words)))
+			whole_similar_words = self._word_model.most_similar(positive=useful_important_words, topn=candidate_length)
+			logger.info("get whole_similar_words %s based on useful_important_words %s as whole" % (my_unicode(whole_similar_words), my_unicode(useful_important_words)))
 		except KeyError as e:
-			# treat important word seperately
-			whole_similar_words = []
-			for important_word in important_words:
-				try:
-					similar_words = self._word_model.most_similar(positive=[ important_word ], topn=candidate_length)
-				except KeyError as e1:
-					pass
-				else:
-					for (similar_word, similarity) in similar_words:
-						print similar_word, similarity
-					whole_similar_words.extend(similar_words)
-					logger.info("get similar_words[%s] based on important_word[%s] seperately" % (str(similar_words), str(important_word)))
+			logger.exception(e)
 
 		# Oops, we don't know what user want, create one randomly
 		if not whole_similar_words:
 			logger.warning("Oops, no similar word generated based on important_word[%s] seperately" % str(important_word))
+		else:
+			# filter word type and word length
+			whole_similar_words = self._filter_simliar_words(whole_similar_words, logger)
+			logger.info("filtered whole_similar_words %s based on important_words %s as whole" % (my_unicode(whole_similar_words), my_unicode(important_words)))
 
-		# order list of tuple, and fetch the first candidate_length of candidates
-		whole_similar_words = sorted(whole_similar_words, key=operator.itemgetter(1), reverse=True)
-		candidate_words = whole_similar_words[:candidate_length]
-		logger.info("generate candidate_words[%s] based on important_words[%s]" % (str(candidate_words), str(important_words)))
-		#print 'whole', len(whole_similar_words), whole_similar_words
-		print 'candidate', len(candidate_words), candidate_words
+			# order list of tuple, and fetch the first candidate_length of candidates
+			whole_similar_words = sorted(whole_similar_words, key=operator.itemgetter(1), reverse=True)
+			candidate_words = whole_similar_words[:candidate_length]
+			logger.info("get candidate_words %s based on important_words %s" % (my_unicode(candidate_words), my_unicode(important_words)))
 
 		# at now, we promise whole_similar_words have enough data
 		# now, combine them with sentences
 		already_used_words = []
 		for format_sentence in format_sentences:
-			keyword_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
-			keyword_sentences.append(keyword_sentence)
+			word_sentence = self._combine_candidate_word_with_single_sentence(format_sentence, candidate_words, already_used_words, logger)
+			word_sentences.append(word_sentence)
 
-		return keyword_sentences
+		return word_sentences
 
 	def _generate_common_rhythm(self, is_ping=True):
 		""" generate common rhythm"""
@@ -463,9 +571,7 @@ class Generator(object):
 			if count > 5:
 				break
 
-		print 'narrow' , narrow_candidate_rhythms
 		selected_rhythm = self._weighted_choice(narrow_candidate_rhythms)
-		print 'select', selected_rhythm
 		return selected_rhythm
 
 	def _generate_common_words(self, rhythm, is_ping=True):
@@ -487,23 +593,28 @@ class Generator(object):
 		second, generate words based on rhythm
 		"""
 
+		logger.info("generate_rhythm: generate common rhythm for isping[%d]" % int(is_ping))
 		rhythm = self._generate_common_rhythm(is_ping)
-		logger.info("use rhythm[%s] for generatoin" % rhythm)
-		return self._generate_common_words(rhythm, is_ping)
+		logger.info("generate_rhythm: use rhythm[%s] for is_ping[%d] generatoin" % (rhythm, int(is_ping)))
+		logger.info("generate_rhythm: generate common words for isping[%d]" % int(is_ping))
+		word_count_dict = self._generate_common_words(rhythm, is_ping)
+		logger.info("generate_rhythm: word_count_dict %s for isping[%d]" % (my_unicode_sd(word_count_dict), int(is_ping)))
+		return word_count_dict
 
 	def _generate_rhythm(self, format_sentences, word_sentences, logger):
 		""" generate rhythm"""
+		
+		logger.info("generate_rhythm: format_sentences")
 
 		# generate ping word with count
 		ping_word_count_dict = self._generate_common_rhythm_words(True, logger)
-		print 'ping', ping_word_count_dict
 
 		# genrate ze word with count
 		ze_word_count_dict = self._generate_common_rhythm_words(False, logger)
-		print 'ze', ze_word_count_dict
 
 		already_used_rhythm_words = []
 		for format_sentence, word_sentence in zip(format_sentences, word_sentences):
+			logger.info("generate_rhythm: format_sentence %s, word_sentence %s" % (my_unicode(format_sentence), my_unicode(word_sentence)))
 			rhythm_word = ""
 			if format_sentence[-1] == '1':
 				rhythm_word = self._weighted_choice(ping_word_count_dict, already_used_rhythm_words)
@@ -514,15 +625,17 @@ class Generator(object):
 			else:
 				logger.error("rhythm_type[%s] illegal" % format_sentence[-1])
 			already_used_rhythm_words.append(rhythm_word)
+			logger.debug("generate_rhythm: use rhythm_word %s" % rhythm_word)
 
 			word_sentence[len(format_sentence)-1] = rhythm_word
 				
-	def _fill_word(self, direction, tofill_position, format_sentence, word_sentence, global_repeat_words, logger):
+	def _fill_word(self, direction, tofill_position, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, level, logger):
 		""" fill word by related word, and position"""
 
-		print 'tofill_position_in_fill_word', tofill_position
+		logger.debug("fill_word: level[%d] fill word" % level)
+
 		seed_word = word_sentence[tofill_position - direction]
-		print 'seed_word', seed_word
+		logger.debug("fill_word: level[%d] tofill_position[%d] seed_word %s" % (level, tofill_position, seed_word))
 
 		# check 2-gram dict and pingze order
 		if direction > 0:
@@ -532,25 +645,36 @@ class Generator(object):
 			bigram_word_dict = self._bigram_word_to_end_dict
 			verb_position = 0
 
-		print 'verb_position', verb_position
+		logger.debug("fill_word: level[%d] verb_position[%d]" % (level, verb_position))
 
 		if seed_word in bigram_word_dict:
 			candidate_words = bigram_word_dict[seed_word]
 			candidate_verb_count_dict = {}
 			for candidate_word in candidate_words:
 
-				#print 'verb_candidate_word', candidate_word
 				candidate_verb = candidate_word[verb_position]
-				#print 'verb_candidate_verb', candidate_verb
+				#logger.debug("fill_word: level[%d] candidate_verb %s, candidate_word %s with seed_word %s" % (level, candidate_verb, candidate_word, seed_word))
 				if candidate_verb not in self._reverse_pingze_word_dict:
+					#logger.debug("fill_word: level[%d] candidate_verb %s no pingze info, skip" % (level, candidate_verb))
 					continue
 
 				# not use repeated word
 				if candidate_verb in global_repeat_words:
+					#logger.debug("fill_word: level[%d] candidate_verb %s in global repeat words %s, skip" % (level, candidate_verb, my_unicode(global_repeat_words)))
 					continue
 
+				# not use too many repeated word in one sentence
+				if candidate_verb in current_repeat_dict:
+					if current_repeat_dict[candidate_verb] > 2:
+						logger.debug("fill_word: level[%d] candidate_verb %s in current repeat words, skip" % (level, candidate_verb))
+						continue
+
 				# check pingze order first
-				if (format_sentence[tofill_position] != '0') and (self._reverse_pingze_word_dict[candidate_verb] != format_sentence[tofill_position]):
+				format_tofill_position = format_sentence[tofill_position]
+				candidate_verb_position = self._reverse_pingze_word_dict[candidate_verb]
+				#logger.debug("fill_word: level[%d] candidate_verb %s format_pingze_position %s, verb_position %s" % (level, candidate_verb, format_tofill_position, candidate_verb_position))
+				if (format_tofill_position != '0') and (candidate_verb_position != format_tofill_position):
+					#logger.debug("fill_word: level[%d] candidate_verb %s pingze not match, skip" % (level, candidate_verb))
 					continue
 
 				# set initial, protect not exists
@@ -558,108 +682,239 @@ class Generator(object):
 				if candidate_word in self._bigram_count_dict:
 					candidate_verb_count_dict[candidate_verb] = self._bigram_count_dict[candidate_word]
 
-			if candidate_verb_count_dict: # there exists some valid verb
-				selected_word = ""
-				max_count = -1
-				for candidate_verb, count in candidate_verb_count_dict.iteritems():
-					if count > max_count:
-						max_count = count
-						selected_word = candidate_verb
+			if candidate_verb_count_dict: # there exists some valid verbs
+				#selected_word = ""
+				# definitive select max one
+				#max_count = -1
+				#for candidate_verb, count in candidate_verb_count_dict.iteritems():
+				#	if count > max_count:
+				#		max_count = count
+				#		selected_word = candidate_verb
+				#logger.debug("fill_word: level[%d] select_word %s with count %d" % (level, selected_word, max_count))
+
+				# random select word
+				topN = 5
+				selected_word = self._get_top_word_weight_random(candidate_verb_count_dict, topN)
+				logger.debug("fill_word: level[%d] select_word %s with random topN %d" % (level, selected_word, topN))
 			else:
-				print 'visit2'
+				logger.error("fill_word: level[%d] no candidate word" % (level))
 				if candidate_words: # no pingze satisfy, random select one
-					idx = random.randint(0, len(candidate_words))
+					idx = random.randint(0, len(candidate_words) - 1)
 					selected_word = candidate_words[idx][verb_position]
+					logger.debug("fill_word: level[%d] select_word %s with idx %d" % (level, selected_word, idx))
 				else:
 					raise ValueError("word exist in bigram_word_dict, but it's empty")
 		else: # word not exists in 2-gram
-			pass
+			logger.error("fill_word: level[%d] seed_word %s not exist in 2-gram" % (level, seed_word))
 
 		# select and fill
 		word_sentence[tofill_position] = selected_word
+		if selected_word not in current_repeat_dict:
+			current_repeat_dict[selected_word] = 1
+		else:
+			current_repeat_dict[selected_word] += 1
+		
+		logger.info("fill_word: level[%d] tofill_position[%d] seed_word %s, fill_word %s" % (level, tofill_position, seed_word, selected_word))
 
-		print 'fill', tofill_position, selected_word, word_sentence
+	def _up_fill_direction(self, tofill_position, sentence_length, logger):
+		""" some words are connected tight than other"""
+		format_positions = self._check_position_by_sentence_length(sentence_length, logger)
 
-	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, logger, level=0):
-		""" recursion generate"""
+		# we dont know, use down-fill
+		if not format_positions:
+			return False
+		if tofill_position in format_positions:
+			return False
+		else:
+			return True
 
-		print 'current level', level
+	def _search_generate(self, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, already_used_sentences, already_used_rhythm_words, logger):
+		""" try to search already exist word"""
+
+		# no search for only rhythm sentence
+		if len(word_sentence) <= 1:
+			return False
 
 		sentence_length = len(format_sentence)
-		print 'len word_sentence', len(word_sentence.keys()), sentence_length
+		if sentence_length <= 2:
+			return False
 
-		# all position filled, return
-		if len(word_sentence.keys()) == sentence_length:
-			print 'recursion finish'
+		for sentence in self._sentences:
+			if sentence_length != len(sentence):
+				continue
+			for word in word_sentence.values():
+				if word not in sentence:
+					continue
+
+			# now, check rhythm
+			current_rhythm_word = word_sentence[len(format_sentence) - 1]
+			if current_rhythm_word not in self._reverse_rhythm_word_dict:
+				continue
+			current_rhythm = self._reverse_rhythm_word_dict[current_rhythm_word]
+			sentence_word = sentence[-1]
+			if sentence_word not in self._reverse_rhythm_word_dict:
+				continue
+			if sentence_word in already_used_rhythm_words:
+				continue
+			sentence_rhythm = self._reverse_rhythm_word_dict[sentence_word]
+
+			if sentence_rhythm == current_rhythm:
+				sentence_dict = {}
+				for i, word in enumerate(sentence):
+					sentence_dict[i] = word
+				if sentence_dict in already_used_sentences:
+					continue
+				u = random.random()
+				if u < 0.8:
+					continue
+				return sentence_dict
+		return False
+
+	def _sub_generate(self, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger, level=0):
+		""" recursion generate single sentence"""
+
+		sentence_length = len(format_sentence)
+		word_sentence_length = len(word_sentence.keys())
+
+		logger.info("sub_generate: level[%d]" % level)
+		logger.debug("sub_generate: level[%d] sentence_len %d, word_filled_len %d" % (level, sentence_length, word_sentence_length))
+
+		# all word position filled, return
+		if word_sentence_length == sentence_length:
+			logger.info("sub_generate: recursion finish")
 			return
 
 		# show candidate positions based on current filled positions
 		candidate_positions = []
-		[ candidate_positions.append(i) for i in range(sentence_length) if ((i-1) in word_sentence) or ((i+1) in word_sentence) ]
+		for i in range(sentence_length):
+			if i in word_sentence:
+				continue
+			if (i-1) in word_sentence or (i+1) in word_sentence:
+				candidate_positions.append(i)
+		logger.debug("sub_generate: level[%d] candidate_positions %s" % (level, str(candidate_positions)))
 		if not candidate_positions:
-			raise ValueError("candidation_position len zero")
-		if len(candidate_positions) == 1:
+			raise ValueError("candidate_positions len zero, illegal")
+		if len(candidate_positions) == 1: # no choice but use this
 			tofill_position = candidate_positions[0]
-		else: # random choose one
+		else: # random choose one in choices
+
+			## always fill rhythm_word related at end
+			#if sentence_length - word_sentence_length > 1: 
+			#	if (sentence_length - 2) in candidate_positions:
+			#		candidate_positions.remove(sentence_length - 2)
+
 			idx = random.randint(0, len(candidate_positions) - 1)
 			tofill_position = candidate_positions[idx]
-
-		print 'candidate_positions', candidate_positions
-		print 'tofill_positoin', tofill_position
+		logger.debug("sub_generate: level[%d] tofill_position %d" % (level, tofill_position))
 
 		up_fill_direction = (tofill_position - 1) in word_sentence
 		down_fill_direction = (tofill_position + 1) in word_sentence
 		both_fill_direction = up_fill_direction and down_fill_direction
 
 		if both_fill_direction: # consider format, choose only one, consider later
-			up_fill_direction = False
-
-		both_fill_direction = up_fill_direction and down_fill_direction
-		assert (not both_fill_direction)
+			if self._up_fill_direction(tofill_position, sentence_length, logger):
+				up_fill_direction = True
+				down_fill_direction = False
+			else:
+				up_fill_direction = False
+				down_fill_direction = True
+			
+		logger.debug("sub_generate: level[%d] up_fill_direction[%d] down_fill_direction[%d]" % (level, up_fill_direction, down_fill_direction))
 
 		# fill word one by one
 		if up_fill_direction:
-			print 'up_fill'
-			self._fill_word(1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
+			logger.debug("sub_generate: level[%d] use up_fill method" % (level))
+			self._fill_word(1, tofill_position, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, level, logger)
 		else:
-			print 'down_fill'
-			self._fill_word(-1, tofill_position, format_sentence, word_sentence, global_repeat_words, logger)
+			logger.debug("sub_generate: level[%d] use down_fill method" % (level))
+			self._fill_word(-1, tofill_position, format_sentence, word_sentence, global_repeat_words, current_repeat_dict, level, logger)
 	
 		level = level + 1
-		self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger, level)
+		self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger, level)
+
+	def _fill_result_with_format(self, result_sentence_list):
+		""" fill result with format"""
+
+		result = ""
+
+		delimiters = self._title_delimiter_dict[self._title]
+		idx_delimiter = 0
+		for result_sentence in result_sentence_list:
+			result += result_sentence
+			result += delimiters[idx_delimiter]
+			if (idx_delimiter+1 < len(delimiters)) and (delimiters[idx_delimiter+1] == "|"):
+				result += " | "
+				idx_delimiter += 1
+			idx_delimiter += 1
+		return result
 
 	def _generate(self, format_sentences, word_sentences, logger):
 		""" generate poem based on important words and rhythm word"""
 
+		result_sentence_list = []
+
 		# generate each sentence
+		# avoid words between sentences
 		global_repeat_words = []
-		test_sentence = ""
-		for (format_sentence, word_sentence) in zip(format_sentences, word_sentences):
-			print 'final'
-			print format_sentence
-			print word_sentence
+		already_used_rhythm_words = []
+		already_used_sentences = []
+		for i, (format_sentence, word_sentence) in enumerate(zip(format_sentences, word_sentences)):
+			result_sub_sentence = ""
 
-			self._sub_generate(format_sentence, word_sentence, global_repeat_words, logger)
-			[ global_repeat_words.append(word) for word in word_sentence.values() ]
-
-			print 'final_fill'
-			print word_sentence
+			# avoid too many same word in one sentence
+			current_repeat_dict = {}
 			for word in word_sentence.values():
-				test_sentence += word
-			test_sentence += ","
-		return test_sentence
+				if word not in current_repeat_dict:
+					current_repeat_dict[word] = 1
+				else:
+					current_repeat_dict[word] += 1
 
+			self._show_word_sentence(format_sentence, word_sentence, logger, "omg origin:s %d" % (i+1))
+			u = random.random()
+			if u < self._search_ratio:
+				search_sentence = self._search_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, already_used_sentences, already_used_rhythm_words, logger)
+				if not search_sentence:
+					self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger)
+				else:
+					logger.info("[%d] use search generate for word sentence" % i)
+					word_sentence = search_sentence
+					already_used_sentences.append(search_sentence)
+			else:
+				self._sub_generate(format_sentence, word_sentence, global_repeat_words, current_repeat_dict, logger)
+			self._show_word_sentence(format_sentence, word_sentence, logger, "omg final:s %d" % (i+1))
+
+			for word in word_sentence.values():
+				result_sub_sentence += word
+				global_repeat_words.append(word)
+			already_used_rhythm_words.append(word_sentence[len(format_sentence) - 1])
+			result_sentence_list.append(result_sub_sentence)
+
+		# fill with delimiter
+		if self._title not in self._title_delimiter_dict:
+			print 'here'
+			return u'，'.join(result_sentence_list)
+		elif len(self._title_delimiter_dict[self._title]) != (len(result_sentence_list)+1):
+			print 'here2'
+			raise
+			return u'，'.join(result_sentence_list)
+		else:
+			return self._fill_result_with_format(result_sentence_list)
+			
 	def init(self, logger):
+
 		if self._force_data_build:
 			self._init_data_build(logger)
 		else:
 			try:
 				self._load_data_build(logger)
 			except Exception as e:
-				logger.info("re-init related data")
+				logger.exception(e)
 				self._init_data_build(logger)
 	
 	def check(self, input_param_dict, logger):
+		""" select ci-title with supported titles"""
+		return ""
+
 		if ('title' in input_param_dict) and (input_param_dict['title'] not in self._support_titles):
 			return "%s 不是候选的词牌名" % input_param_dict['title']
 
@@ -673,9 +928,79 @@ class Generator(object):
 
 		# combine important words with format sentences
 		word_sentences = self._combine_important_word_with_sentence(self._important_words, format_sentences, logger)
+		self._show_word_sentences(format_sentences, word_sentences, logger)
 
 		# decide rhythm and related words
 		self._generate_rhythm(format_sentences, word_sentences, logger)
-	
+		self._show_word_sentences(format_sentences, word_sentences, logger)
+
 		# now, generate poem
-		return self._generate(format_sentences, word_sentences, logger)
+		result_sentences = self._generate(format_sentences, word_sentences, logger)
+		logger.info("titile[%s] generate ci %s" % (self._title, result_sentences))
+		return result_sentences
+
+
+if __name__ == '__main__':
+	confpath = os.path.join(basepath, 'conf/poem.conf')
+	conf = ConfigParser.RawConfigParser()
+	conf.read(confpath)
+	logging.basicConfig(filename=os.path.join(basepath, 'logs/chinese_poem.log'), level=logging.DEBUG,
+		format = '[%(filename)s:%(lineno)s - %(funcName)s %(asctime)s;%(levelname)s] %(message)s',
+		datefmt = '%a, %d %b %Y %H:%M:%S'
+	)
+	logger = logging.getLogger('ChinesePoem')
+ 
+	generator = Generator(basepath, conf)
+	try:
+		# special case test
+		user_input_dict = dict(title=u"南乡子", important_words=[], force_data_build=False)
+		user_input_dict = dict(title=u"南乡子", important_words=[u"计算机"], force_data_build=False)
+
+		#user_input_dict = dict(title=u"水调歌头", important_words=[u"菊花", u"院子"], force_data_build=False)
+		# As user input, for theme of poem, and title
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"庭院"], force_data_build=False)
+		#user_input_dict = dict(title=u"蝶恋花", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"南乡子", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"山川", u"流水"], force_data_build=False)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊花", u"院子"], force_data_build=False)
+		#user_input_dict = dict(title=u"浣溪沙", important_words=[u"菊", u"院子"], force_data_build=False)
+
+		#if True:
+		for title in TitleRhythmDict.keys():
+			#title = u"浣溪沙"
+			#title = u"水调歌头"
+			title = title.decode()
+			print title
+			mock_tags = {"天空":{"text":"天空","confidence":99},"草":{"text":"草","confidence":99},"户外":{"text":"户外","confidence":99},"山":{"text":"山","confidence":99},"田地":{"text":"田地","confidence":98},"绿色":{"text":"绿色","confidence":93},"自然":{"text":"自然","confidence":93},"动物":{"text":"动物","confidence":81},"绿色的":{"text":"绿色的","confidence":70},"放牧":{"text":"放牧","confidence":70},"打开":{"text":"打开","confidence":65},"牧场":{"text":"牧场","confidence":64},"青葱的":{"text":"青葱的","confidence":56},"高地":{"text":"高地","confidence":48},"黄牛":{"text":"黄牛","confidence":42},"平原":{"text":"平原","confidence":27},"距离":{"text":"距离","confidence":13}}
+			important_words = []
+			for mock_tag in mock_tags.keys():
+				important_words.append(mock_tag.decode())
+			user_input_dict = dict(title=title, important_words=important_words, force_data_build=False)
+
+			# Init
+			u = random.random() * 0.8
+			print 'ratio', u
+			generator.search_ratio = u
+			generator.force_data_build = user_input_dict["force_data_build"]
+			generator.init(logger)
+
+			# Generate poem
+			print 'title', title
+			error_info = generator.check(user_input_dict, logger)
+			if not error_info:
+				generator.important_words = user_input_dict["important_words"]
+				generator.title = user_input_dict["title"]
+
+				logger.info("generate poem for title %s, with important words %s" % (generator.title, my_unicode(generator.important_words)))
+				print generator.generate(logger)
+			else:
+				logger.error("dont generate poem because of %s" % error_info)
+				print error_info
+
+	except ValueError as e:
+		logger.exception(e)
+		print e
+	except Exception as e:
+		logger.exception(e)
+		print e
+
