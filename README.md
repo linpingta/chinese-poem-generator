@@ -1,4 +1,4 @@
-# ChinesePoemGenerator
+# 作诗机 ChinesePoemGenerator
 根据用户输入的关键字，生成宋词
 这是公司黑客马拉松的一个项目，此处代码文件和[chinese-poem-generator](https://github.com/imagetellerD/chinese-poem-generator)基本一致，是因为后者也是我开发的，但比赛要求建立在公共账户内，所以不得不重复了两个项目，后续更新会以此为主。
 
